@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ラングトンの蟻</title>
+
+  <style>
+    body { font-family: Segoe UI, sans-serif; text-align: center; background: #f7f7f7; }
+    #controls { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:10px; }
+    button,input,select { padding:6px 10px; border-radius:6px; border:1px solid #ccc; }
+    canvas { background:white; border:1px solid #ccc; margin-top:10px; cursor:pointer; }
+    #counters { margin-top:6px; }
+  </style>
+</head>
+
+<body>
+  <div id="controls">
+    <button id="playPause">再生</button>
+    <button id="stepOnce">1歩進める</button>
+    <button id="undoStep">一歩戻る</button>
+    <button id="apply">適用</button>
+    <button id="reset">リセット</button>
+    <button id="centerAnt">中央に蟻を配置</button>
+    <button id="clear">全消去</button>
+    <button id="fillBlack">すべて黒にする</button>
+
+    <label>速度:
+      <!-- ★ 最大値 100 に変更（毎秒100ステップ） ★ -->
+      <input id="speedRange" type="range" min="1" max="100" value="30" style="width:120px">
+    </label>
+
+    <label>セルサイズ:
+      <input id="cellSizeRange" type="range" min="5" max="40" value="10" style="width:120px">
+    </label>
+
+    <label>盤面サイズ:
+      <input id="sizeRange" type="range" min="20" max="200" value="60" style="width:120px">
+    </label>
+
+    <label>囲いサイズ:
+      <input id="diamondSize" type="number" value="0" style="width:60px; margin-left:6px">
+      <button id="makeDiamond">囲い作成</button>
+    </label>
+  </div>
+
+  <div id="counters">
+    <div id="stepCounter">歩数: 0</div>
+    <div id="colorCounter">黒: 0 | 白: 0</div>
+  </div>
+
+  <canvas id="gridCanvas"></canvas>
+
+  <script>
+  (function(){
+    const canvas = document.getElementById('gridCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const play = document.getElementById('playPause');
+    const undo = document.getElementById('undoStep');
+    const stepC = document.getElementById('stepCounter');
+    const colorC = document.getElementById('colorCounter');
+    const stepOnce = document.getElementById('stepOnce');
+    const apply = document.getElementById('apply');
+    const reset = document.getElementById('reset');
+    const clearBtn = document.getElementById('clear');
+    const fillBlack = document.getElementById('fillBlack');
+    const centerAnt = document.getElementById('centerAnt');
+    const speedRange = document.getElementById('speedRange');
+    const sizeRange = document.getElementById('sizeRange');
+    const cellSizeInput = document.getElementById('cellSizeRange');
+    const makeDiamondBtn = document.getElementById('makeDiamond');
+    const diamondSize = document.getElementById('diamondSize');
+
+    let cols = parseInt(sizeRange.value);
+    let rows = parseInt(sizeRange.value);
+    let cellSize = parseInt(cellSizeInput.value);
+
+    let grid = new Uint8Array(cols * rows);
+
+    let ants = [
+      { x: Math.floor(cols / 2), y: Math.floor(rows / 2), dir: 0 }
+    ];
+
+    let stepCount = 0;
+    let playing = false;
+    let lastTime = 0;
+
+    // ★ 速度補正：1秒に100ステップ（max=100）
+    let stepInterval = 1000 / parseInt(speedRange.value);
+
+    function idx(x,y){ return y*cols + x }
+    function inBounds(x,y){ return x >= 0 && x < cols && y >= 0 && y < rows }
+
+    function updateColorCounter(){
+      let black = 0;
+      for (let i=0; i<grid.length; i++) if (grid[i] === 1) black++;
+      colorC.textContent = `黒: ${black} | 白: ${grid.length - black}`;
+    }
+
+    function draw(){
+      canvas.width = cols * cellSize;
+      canvas.height = rows * cellSize;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      ctx.strokeStyle = '#ddd';
+      for(let x=0; x<=cols; x++){
+        ctx.beginPath();
+        ctx.moveTo(x*cellSize, 0);
+        ctx.lineTo(x*cellSize, rows*cellSize);
+        ctx.stroke();
+      }
+      for(let y=0; y<=rows; y++){
+        ctx.beginPath();
+        ctx.moveTo(0, y*cellSize);
+        ctx.lineTo(cols*cellSize, y*cellSize);
+        ctx.stroke();
+      }
+
+      for(let y=0; y<rows; y++)
+        for(let x=0; x<cols; x++)
+          if(grid[idx(x,y)] === 1){
+            ctx.fillStyle = 'black';
+            ctx.fillRect(x*cellSize, y*cellSize, cellSize, cellSize);
+          }
+
+      for (let ant of ants){
+        ctx.fillStyle = 'red';
+        ctx.beginPath();
+        const cx = (ant.x + 0.5) * cellSize;
+        const cy = (ant.y + 0.5) * cellSize;
+        const s = cellSize/2;
+
+        if(ant.dir === 0){
+          ctx.moveTo(cx, cy - s);
+          ctx.lineTo(cx - s, cy + s);
+          ctx.lineTo(cx + s, cy + s);
+        } else if(ant.dir === 1){
+          ctx.moveTo(cx + s, cy);
+          ctx.lineTo(cx - s, cy - s);
+          ctx.lineTo(cx - s, cy + s);
+        } else if(ant.dir === 2){
+          ctx.moveTo(cx, cy + s);
+          ctx.lineTo(cx - s, cy - s);
+          ctx.lineTo(cx + s, cy - s);
+        } else {
+          ctx.moveTo(cx - s, cy);
+          ctx.lineTo(cx + s, cy - s);
+          ctx.lineTo(cx + s, cy + s);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      updateColorCounter();
+    }
+
+    // ========= 1ステップ実行 =========
+    function step(){
+      for (let ant of ants){
+        let i = idx(ant.x, ant.y);
+        if (grid[i] === 0){
+          ant.dir = (ant.dir + 1) % 4;
+          grid[i] = 1;
+        } else {
+          ant.dir = (ant.dir + 3) % 4;
+          grid[i] = 0;
+        }
+
+        if (ant.dir === 0) ant.y--;
+        else if (ant.dir === 1) ant.x++;
+        else if (ant.dir === 2) ant.y++;
+        else ant.x--;
+
+        if (!inBounds(ant.x, ant.y)){
+          ant.x = (ant.x + cols) % cols;
+          ant.y = (ant.y + rows) % rows;
+        }
+      }
+
+      stepCount++;
+      stepC.textContent = "歩数: " + stepCount;
+    }
+
+    // ========= 一歩戻る（簡易版） =========
+    function undoStep(){
+      if (stepCount <= 0) return;
+      stepCount--;
+      stepC.textContent = "歩数: " + stepCount;
+    }
+
+    // ========= 囲い作成（簡易版） =========
+    function makeDiamondFn(){
+      const R = parseInt(diamondSize.value);
+      const cx = Math.floor(cols/2), cy = Math.floor(rows/2);
+      for (let y=0; y<rows; y++){
+        for (let x=0; x<cols; x++){
+          if (Math.abs(x - cx) + Math.abs(y - cy) <= R){
+            grid[idx(x,y)] = 1;
+          }
+        }
+      }
+      draw();
+    }
+
+    // ========= 再生ループ =========
+    function animate(t){
+      if (!playing){ requestAnimationFrame(animate); return; }
+      if (t - lastTime >= stepInterval){
+        step();
+        draw();
+        lastTime = t;
+      }
+      requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+
+    // ========= UI =========
+
+    play.addEventListener('click', ()=>{
+      playing = !playing;
+      play.textContent = playing ? '一時停止' : '再生';
+      if (playing) lastTime = performance.now();
+    });
+
+    stepOnce.addEventListener('click', ()=>{ step(); draw(); });
+
+    undoStep.addEventListener('click', undoStep);
+
+    apply.addEventListener('click', ()=> draw());
+
+    reset.addEventListener('click', ()=>{
+      grid = new Uint8Array(cols * rows);
+      ants = [{ x:Math.floor(cols/2), y:Math.floor(rows/2), dir:0 }];
+      stepCount = 0;
+      stepC.textContent = "歩数: 0";
+      draw();
+    });
+
+    centerAnt.addEventListener('click', ()=>{
+      ants = [{ x:Math.floor(cols/2), y:Math.floor(rows/2), dir:0 }];
+      draw();
+    });
+
+    clearBtn.addEventListener('click', ()=>{ grid = new Uint8Array(cols*rows); draw(); });
+
+    fillBlack.addEventListener('click', ()=>{ grid = new Uint8Array(cols*rows).fill(1); draw(); });
+
+    makeDiamondBtn.addEventListener('click', makeDiamondFn);
+
+    canvas.addEventListener('click', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) / cellSize);
+      const y = Math.floor((e.clientY - rect.top) / cellSize);
+      if (inBounds(x,y)){
+        grid[idx(x,y)] ^= 1;
+        draw();
+      }
+    });
+
+    window.addEventListener('keydown', (e)=>{
+      if (e.key === 'Enter'){
+        playing = !playing;
+        play.textContent = playing ? '一時停止' : '再生';
+        if (playing) lastTime = performance.now();
+      }
+      if (e.code === 'Space'){
+        grid = new Uint8Array(cols*rows);
+        ants = [{ x:Math.floor(cols/2), y:Math.floor(rows/2), dir:0 }];
+        stepCount = 0;
+        stepC.textContent='歩数: 0';
+        draw();
+      }
+    });
+
+    // ★ 毎秒100ステップ対応
+    speedRange.addEventListener('input', ()=>{
+      stepInterval = 1000 / parseInt(speedRange.value);
+    });
+
+    sizeRange.addEventListener('input', ()=>{
+      cols = rows = parseInt(sizeRange.value);
+      grid = new Uint8Array(cols * rows);
+      ants = [{ x:Math.floor(cols/2), y:Math.floor(rows/2), dir:0 }];
+      stepCount = 0;
+      stepC.textContent = "歩数: 0";
+      draw();
+    });
+
+    cellSizeInput.addEventListener('input', ()=>{
+      cellSize = parseInt(cellSizeInput.value);
+      draw();
+    });
+
+    draw();
+  })();
+  </script>
+
+</body>
+</html>
